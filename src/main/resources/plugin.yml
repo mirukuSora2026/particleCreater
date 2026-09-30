@@ -1,0 +1,9 @@
+name: particleCreater
+description: $description
+version: '${version}'
+
+main: com.mirukusora26.particleCreater.Main
+api-version: '26.2'
+load: POSTWORLD
+
+authors: [ miruku_sora2026 ]

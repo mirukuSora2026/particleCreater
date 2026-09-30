@@ -1,0 +1,131 @@
+package com.mirukusora26.particleCreater.storage;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonParseException;
+import com.mirukusora26.particleCreater.model.EffectDefinition;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.logging.Logger;
+
+/** Durable SQLite definitions. JSON is the interchange format, not a second source of truth. */
+public final class EffectRepository implements AutoCloseable {
+    private static final int MAX_JSON_BYTES = 1_048_576;
+    private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+    private final Connection connection;
+    private final Path exports;
+    private final Logger logger;
+
+    public EffectRepository(Path dataFolder, Logger logger) throws SQLException, IOException {
+        this.logger=logger;
+        Files.createDirectories(dataFolder);
+        exports=dataFolder.resolve("exports");
+        Files.createDirectories(exports);
+        try { Class.forName("org.sqlite.JDBC"); }
+        catch (ClassNotFoundException e) { throw new SQLException("SQLite driver is missing from plugin jar",e); }
+        connection=DriverManager.getConnection("jdbc:sqlite:"+dataFolder.resolve("effects.db").toAbsolutePath());
+        try(Statement st=connection.createStatement()) {
+            st.execute("PRAGMA busy_timeout=5000");
+            st.execute("PRAGMA journal_mode=WAL");
+            st.execute("CREATE TABLE IF NOT EXISTS effects (name TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, definition TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+        }
+    }
+
+    public synchronized List<EffectDefinition> loadAll() throws SQLException {
+        List<EffectDefinition> effects=new ArrayList<>();
+        try(Statement st=connection.createStatement(); ResultSet rs=st.executeQuery("SELECT name,definition FROM effects ORDER BY name")) {
+            while(rs.next()) {
+                try {
+                    EffectDefinition effect=parse(rs.getString(2));
+                    if(!rs.getString(1).equals(effect.name)) throw new IllegalArgumentException("Stored name differs from definition");
+                    effects.add(effect);
+                } catch(RuntimeException e) { logger.warning("Skipping invalid saved effect '"+rs.getString(1)+"': "+e.getMessage()); }
+            }
+        }
+        return effects;
+    }
+
+    public synchronized Optional<EffectDefinition> find(String name) throws SQLException {
+        try(PreparedStatement ps=connection.prepareStatement("SELECT definition FROM effects WHERE name=?")) {
+            ps.setString(1,name);
+            try(ResultSet rs=ps.executeQuery()) { return rs.next()?Optional.of(parse(rs.getString(1))):Optional.empty(); }
+        }
+    }
+
+    public synchronized void save(EffectDefinition effect) throws SQLException {
+        String json=encode(effect);
+        try(PreparedStatement ps=connection.prepareStatement("INSERT INTO effects(name,schema_version,definition,updated_at) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET schema_version=excluded.schema_version, definition=excluded.definition, updated_at=excluded.updated_at")) {
+            ps.setString(1,effect.name);ps.setInt(2,effect.schemaVersion);ps.setString(3,json);ps.setLong(4,System.currentTimeMillis());ps.executeUpdate();
+        }
+    }
+
+    public synchronized void rename(String oldName,EffectDefinition renamed) throws SQLException {
+        String json=encode(renamed);
+        boolean previous=connection.getAutoCommit();connection.setAutoCommit(false);
+        try {
+            try(PreparedStatement check=connection.prepareStatement("SELECT 1 FROM effects WHERE name=?")) {
+                check.setString(1,renamed.name);
+                try(ResultSet rs=check.executeQuery()) { if(rs.next()) throw new SQLException("Name already exists: "+renamed.name); }
+            }
+            try(PreparedStatement insert=connection.prepareStatement("INSERT INTO effects(name,schema_version,definition,updated_at) VALUES(?,?,?,?)")) {
+                insert.setString(1,renamed.name);insert.setInt(2,renamed.schemaVersion);insert.setString(3,json);insert.setLong(4,System.currentTimeMillis());insert.executeUpdate();
+            }
+            try(PreparedStatement delete=connection.prepareStatement("DELETE FROM effects WHERE name=?")) {
+                delete.setString(1,oldName);
+                if(delete.executeUpdate()!=1) throw new SQLException("Missing original effect: "+oldName);
+            }
+            connection.commit();
+        } catch(SQLException e) {connection.rollback();throw e;}
+        finally {connection.setAutoCommit(previous);}
+    }
+
+    public synchronized boolean delete(String name) throws SQLException {
+        try(PreparedStatement ps=connection.prepareStatement("DELETE FROM effects WHERE name=?")) {ps.setString(1,name);return ps.executeUpdate()==1;}
+    }
+
+    public Path exportJson(EffectDefinition effect) throws IOException {
+        Path target=exports.resolve(effect.name+".json");
+        Path temporary=Files.createTempFile(exports,"effect-",".tmp");
+        try {
+            Files.writeString(temporary,encode(effect),StandardCharsets.UTF_8);
+            Files.move(temporary,target,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+        } finally {Files.deleteIfExists(temporary);}
+        return target;
+    }
+
+    public EffectDefinition importJson(String fileName) throws IOException {
+        if(!fileName.matches("[a-z0-9_-]{1,48}\\.json")) throw new IllegalArgumentException("Import file must be a name.json in the exports folder");
+        Path file=exports.resolve(fileName);
+        if(Files.size(file)>MAX_JSON_BYTES) throw new IllegalArgumentException("Import file exceeds 1 MiB");
+        return parse(Files.readString(file,StandardCharsets.UTF_8));
+    }
+
+    public EffectDefinition copy(EffectDefinition effect) { return parse(encode(effect)); }
+
+    private String encode(EffectDefinition effect) {
+        String json=gson.toJson(effect);
+        if(json.getBytes(StandardCharsets.UTF_8).length>MAX_JSON_BYTES) throw new IllegalArgumentException("Effect definition exceeds 1 MiB");
+        return json;
+    }
+    private EffectDefinition parse(String json) {
+        try {
+            EffectDefinition result=gson.fromJson(json,EffectDefinition.class);
+            if(result==null||result.schemaVersion!=1) throw new IllegalArgumentException("Unsupported or missing schemaVersion");
+            return result;
+        } catch(JsonParseException e) {throw new IllegalArgumentException("Invalid effect JSON: "+e.getMessage(),e);}
+    }
+
+    @Override public synchronized void close() throws SQLException {connection.close();}
+}
