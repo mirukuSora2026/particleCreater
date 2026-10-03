@@ -19,28 +19,38 @@ public final class Main extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        String stage="database initialization";
         try {
             repository = new EffectRepository(getDataFolder().toPath(), getLogger());
+            stage="import directory creation";
             Files.createDirectories(getDataFolder().toPath().resolve("imports"));
+            stage="effect loading and validation";
             effects = new EffectService(repository, getLogger());
+            stage="playback scheduler registration";
             playback = new PlaybackManager(this, effects);
             effects.attachPlayback(playback);
+            stage="service registration";
             Bukkit.getServicesManager().register(EffectService.class, effects, this, ServicePriority.Normal);
+            stage="command registration";
             registerCommand("pc", new PcCommand(effects, playback, getLogger(), getDataFolder().toPath().resolve("imports")));
             getLogger().info("Loaded " + effects.names().size() + " particle effects");
         } catch (SQLException | IOException | RuntimeException e) {
-            getLogger().log(Level.SEVERE, "Could not start particleCreater", e);
+            getLogger().log(Level.SEVERE, "[STARTUP] particleCreater failed during "+stage+": "+(e.getMessage()==null?e.getClass().getSimpleName():e.getMessage()), e);
             Bukkit.getPluginManager().disablePlugin(this);
         }
     }
 
     @Override
     public void onDisable() {
-        Bukkit.getServicesManager().unregisterAll(this);
-        if (playback != null) playback.close();
+        try { Bukkit.getServicesManager().unregisterAll(this); }
+        catch (RuntimeException e) { getLogger().log(Level.SEVERE,"Could not unregister particle service",e); }
+        if (playback != null) {
+            try { playback.close(); }
+            catch (RuntimeException e) { getLogger().log(Level.SEVERE,"Could not stop particle playback",e); }
+        }
         if (repository != null) {
             try { repository.close(); }
-            catch (SQLException e) { getLogger().severe("Could not close effect database: " + e.getMessage()); }
+            catch (SQLException e) { getLogger().log(Level.SEVERE,"Could not close effect database",e); }
         }
     }
 

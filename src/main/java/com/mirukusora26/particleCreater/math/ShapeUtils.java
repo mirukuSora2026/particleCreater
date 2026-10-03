@@ -8,6 +8,7 @@ import java.util.function.Consumer;
 /** Built-in shape samplers. Coordinates are local to the effect origin. */
 public final class ShapeUtils {
     private ShapeUtils() {}
+    public static final double MAX_ROTATION_DEGREES = 1_000_000_000;
 
     public static final List<String> BASIC = List.of("point", "line", "polyline", "circle", "arc", "ellipse", "rectangle", "polygon", "star", "spiral", "heart", "bezier", "spline", "sphere", "hemisphere", "ellipsoid", "box", "cylinder", "cone", "pyramid", "torus", "capsule", "helix", "orbit", "wave", "parabola");
 
@@ -116,13 +117,33 @@ public final class ShapeUtils {
     }
 
     public static Vec3 transform(Vec3 value, Shape shape) {
-        double[] s=shape.scale, r=shape.rotate, tr=shape.translate;
-        double x=value.x()*s[0], y=value.y()*s[1], z=value.z()*s[2];
-        double ax=Math.toRadians(r[0]), ay=Math.toRadians(r[1]), az=Math.toRadians(r[2]);
-        double yy=y*Math.cos(ax)-z*Math.sin(ax), zz=y*Math.sin(ax)+z*Math.cos(ax); y=yy; z=zz;
-        double xx=x*Math.cos(ay)+z*Math.sin(ay); zz=-x*Math.sin(ay)+z*Math.cos(ay); x=xx; z=zz;
-        xx=x*Math.cos(az)-y*Math.sin(az); yy=x*Math.sin(az)+y*Math.cos(az);
-        return new Vec3(xx+tr[0],yy+tr[1],z+tr[2]);
+        return compileTransform(shape).apply(value);
+    }
+
+    /** Snapshot a transform once and reuse it for every point in a shape or frame. */
+    public static Transform compileTransform(Shape shape) {
+        return compileTransform(shape.scale,shape.rotate,shape.translate);
+    }
+
+    public static Transform compileTransform(double[] scale,double[] rotate,double[] translate) {
+        if(scale==null||rotate==null||translate==null||scale.length!=3||rotate.length!=3||translate.length!=3)
+            throw new IllegalArgumentException("Transform needs three scale, rotation and translation values");
+        for(double value:scale) if(!Double.isFinite(value)) throw new IllegalArgumentException("Transform scale must be finite");
+        for(double value:rotate) if(!Double.isFinite(value)||Math.abs(value)>MAX_ROTATION_DEGREES) throw new IllegalArgumentException("Transform rotation must be within +/-1000000000 degrees");
+        for(double value:translate) if(!Double.isFinite(value)) throw new IllegalArgumentException("Transform translation must be finite");
+        double ax=Math.toRadians(rotate[0]),ay=Math.toRadians(rotate[1]),az=Math.toRadians(rotate[2]);
+        if(!Double.isFinite(ax)||!Double.isFinite(ay)||!Double.isFinite(az)) throw new IllegalArgumentException("Transform rotation is too large");
+        return new Transform(scale[0],scale[1],scale[2],Math.sin(ax),Math.cos(ax),Math.sin(ay),Math.cos(ay),Math.sin(az),Math.cos(az),translate[0],translate[1],translate[2]);
+    }
+
+    public record Transform(double sx,double sy,double sz,double sinX,double cosX,double sinY,double cosY,double sinZ,double cosZ,double tx,double ty,double tz) {
+        public Vec3 apply(Vec3 value) {
+            double x=value.x()*sx,y=value.y()*sy,z=value.z()*sz;
+            double yy=y*cosX-z*sinX,zz=y*sinX+z*cosX;y=yy;z=zz;
+            double xx=x*cosY+z*sinY;zz=-x*sinY+z*cosY;x=xx;z=zz;
+            xx=x*cosZ-y*sinZ;yy=x*sinZ+y*cosZ;
+            return new Vec3(xx+tx,yy+ty,z+tz);
+        }
     }
 
     private static void sampleArea(Shape shape,Consumer<Vec3> out) {
@@ -135,6 +156,7 @@ public final class ShapeUtils {
         double zmax=switch(kind){case "circle","ellipse" -> rz;case "rectangle","box","pyramid" -> depth/2;case "torus" -> r+tube;default -> Math.max(r,rz);};
         double ymin=kind.equals("hemisphere")||kind.equals("cone")||kind.equals("rectangle")||kind.equals("circle")||kind.equals("ellipse")?0:-ymax;
         int nx=Math.max(1,(int)Math.ceil(2*xmax/step)),ny=ymax==0?0:Math.max(1,(int)Math.ceil((ymax-ymin)/step)),nz=Math.max(1,(int)Math.ceil(2*zmax/step));
+        if((long)(nx+1)*(ny+1)*(nz+1)>100_000) throw new IllegalArgumentException("Shape sampling grid exceeds 100000 cells: "+shape.id);
         for(int i=0;i<=nx;i++)for(int j=0;j<=ny;j++)for(int k=0;k<=nz;k++) {
             double x=-xmax+2*xmax*i/nx,y=ny==0?0:ymin+(ymax-ymin)*j/ny,z=-zmax+2*zmax*k/nz;
             double clearance;
@@ -156,6 +178,7 @@ public final class ShapeUtils {
     private static void sampleFlat(Shape shape,Consumer<Vec3> out) {
         Map<String,Double> p=shape.numbers;double radius=value(p,"radius",1),step=shape.step;
         int n=Math.max(1,(int)Math.ceil(2*radius/step));
+        if((long)(n+1)*(n+1)>100_000) throw new IllegalArgumentException("Shape sampling grid exceeds 100000 cells: "+shape.id);
         int sides=Math.max(3,Math.min(64,(int)value(p,"sides",6)));
         int vertices=shape.kind.equals("star")?sides*2:sides;
         double[] px=new double[vertices],pz=new double[vertices];

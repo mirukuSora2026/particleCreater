@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Bounded, real-valued expression compiler. It never executes Java or scripts. */
@@ -16,6 +17,7 @@ public final class Expression {
     private static final Map<String, FunctionSpec> FUNCTIONS = new ConcurrentHashMap<>();
     private final String source;
     private final Node root;
+    private final Set<String> variables;
 
     static {
         unary("sin", Math::sin); unary("cos", Math::cos); unary("tan", Math::tan);
@@ -57,13 +59,15 @@ public final class Expression {
     public static Expression compile(String source, Set<String> variables) {
         if (source == null || source.isBlank() || source.length() > 4096)
             throw new IllegalArgumentException("Expression must contain 1 to 4096 characters");
+        if (variables == null) throw new IllegalArgumentException("Variable names are required");
         Parser parser = new Parser(source, variables);
         Node root = parser.parse();
-        return new Expression(source, root);
+        return new Expression(source, root, Set.copyOf(parser.referenced));
     }
 
-    private Expression(String source, Node root) { this.source = source; this.root = root; }
+    private Expression(String source, Node root, Set<String> variables) { this.source = source; this.root = root; this.variables=variables; }
     public String source() { return source; }
+    public Set<String> variables() {return variables;}
 
     public double evaluate(Map<String, Double> variables) {
         double result = root.eval(variables);
@@ -74,9 +78,11 @@ public final class Expression {
     private static final class Parser {
         private final String input;
         private final Set<String> variables;
+        private final Set<String> referenced=new HashSet<>();
         private int pos;
         private int nodes;
         private int depth;
+        private int unaryDepth;
 
         Parser(String input, Set<String> variables) { this.input = input; this.variables = variables; }
         Node parse() {
@@ -131,10 +137,13 @@ public final class Expression {
             }
         }
         private Node unary() {
-            if (take("+")) return unary();
-            if (take("-")) { Node n = unary(); return node(v -> -n.eval(v)); }
-            if (take("!")) { Node n = unary(); return node(v -> n.eval(v) == 0 ? 1 : 0); }
-            return power();
+            if (++unaryDepth > 64) fail("Unary nesting exceeds 64");
+            try {
+                if (take("+")) return unary();
+                if (take("-")) { Node n = unary(); return node(v -> -n.eval(v)); }
+                if (take("!")) { Node n = unary(); return node(v -> n.eval(v) == 0 ? 1 : 0); }
+                return power();
+            } finally {unaryDepth--;}
         }
         private Node power() {
             Node base = primary();
@@ -174,6 +183,7 @@ public final class Expression {
                 if (name.equals("tau")) return node(v -> Math.PI * 2);
                 if (!variables.contains(name)) fail("Unknown variable '" + name + "'");
                 String variable = name;
+                referenced.add(variable);
                 return node(v -> {
                     Double value = v.get(variable);
                     if (value == null) throw new IllegalArgumentException("Missing variable '" + variable + "'");
@@ -189,7 +199,7 @@ public final class Expression {
                 if (pos < input.length() && (input.charAt(pos) == '+' || input.charAt(pos) == '-')) pos++;
                 while (pos < input.length() && Character.isDigit(input.charAt(pos))) pos++;
             }
-            try { double value = Double.parseDouble(input.substring(begin, pos)); return node(v -> value); }
+            try { double value = Double.parseDouble(input.substring(begin, pos)); if(!Double.isFinite(value)) fail("Number must be finite"); return node(v -> value); }
             catch (NumberFormatException e) { fail("Invalid number"); return null; }
         }
         private String identifier() {

@@ -10,6 +10,7 @@ import com.mirukusora26.particleCreater.math.ShapeUtils;
 import com.mirukusora26.particleCreater.model.EffectDefinition;
 import com.mirukusora26.particleCreater.model.EffectDefinition.Layer;
 import com.mirukusora26.particleCreater.model.EffectDefinition.Shape;
+import com.mirukusora26.particleCreater.storage.SavedLocation;
 import io.papermc.paper.command.brigadier.BasicCommand;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import java.io.IOException;
@@ -44,7 +45,7 @@ public final class PcCommand implements BasicCommand {
     private final Logger logger;
     private final Path importFolder;
     private final String prefix="§b[pc] §r";
-    private static final List<String> ROOT=List.of("help","list","info","create","copy","rename","delete","validate","types","type","shapes","shape","layer","mix","set","motion","param","preview","spawn","play","running","pause","resume","stop","stopall","export","import");
+    private static final List<String> ROOT=List.of("help","list","info","create","copy","rename","delete","validate","types","type","shapes","shape","layer","mix","set","motion","param","location","preview","spawn","play","running","pause","resume","stop","stopall","export","import");
 
     public PcCommand(EffectService effects,PlaybackManager playback,Logger logger,Path importFolder) {this.effects=effects;this.playback=playback;this.logger=logger;this.importFolder=importFolder;}
     @Override public boolean canUse(CommandSender sender) {return sender instanceof ConsoleCommandSender||sender instanceof RemoteConsoleCommandSender||sender instanceof BlockCommandSender||sender instanceof Player player&&player.isOp();}
@@ -52,10 +53,13 @@ public final class PcCommand implements BasicCommand {
     @Override public void execute(CommandSourceStack source,String[] args) {
         CommandSender sender=source.getSender();
         if(!canUse(sender)) {sender.sendMessage(prefix+"§cOnly operators, the console, and command blocks may use this command.");return;}
-        try {dispatch(source,words(String.join(" ",args)));}
-        catch(IllegalArgumentException e) {sender.sendMessage(prefix+"§c"+e.getMessage());}
-        catch(SQLException|IOException e) {logger.log(Level.SEVERE,"/pc storage operation failed",e);sender.sendMessage(prefix+"§cStorage error: "+e.getMessage());}
-        catch(Exception e) {logger.log(Level.SEVERE,"/pc command failed",e);sender.sendMessage(prefix+"§cCommand failed. Check the server log for details.");}
+        List<String> parsed=Arrays.asList(args);
+        try {parsed=words(String.join(" ",args));dispatch(source,parsed);}
+        catch(IllegalArgumentException e) {String message=CommandDiagnostics.failure(CommandDiagnostics.inputCategory(parsed,e),parsed,e);logger.warning(message);replyError(sender,message);}
+        catch(ArithmeticException e) {String message=CommandDiagnostics.failure("NUMERIC",parsed,e);logger.warning(message);replyError(sender,message);}
+        catch(SQLException e) {String message=CommandDiagnostics.failure("SQLITE",parsed,e);logger.log(Level.SEVERE,message+" (SQLState="+e.getSQLState()+", code="+e.getErrorCode()+")",e);replyError(sender,message);}
+        catch(IOException e) {String message=CommandDiagnostics.failure("FILE",parsed,e);logger.log(Level.SEVERE,message,e);replyError(sender,message);}
+        catch(Exception e) {String message=CommandDiagnostics.failure("INTERNAL",parsed,e);logger.log(Level.SEVERE,message,e);replyError(sender,message+" Check the server log for details.");}
     }
 
     private void dispatch(CommandSourceStack source,List<String> a) throws SQLException,IOException {
@@ -65,8 +69,7 @@ public final class PcCommand implements BasicCommand {
         switch(root) {
             case "list" -> {
                 int page=a.size()>1?positive(a.get(1)):1;
-                List<String> all=effects.names();int from=(page-1)*20;
-                if(from>=all.size()&&!all.isEmpty()) throw new IllegalArgumentException("Page out of range.");
+                List<String> all=effects.names();int from=CommandNumbers.pageOffset(page,all.size());
                 tell(sender,"Effects: "+all.size()+" (page "+page+"): "+String.join(", ",all.subList(Math.min(from,all.size()),Math.min(from+20,all.size()))));
             }
             case "info" -> {need(a,2,"/pc info <effect>");EffectDefinition effect=effects.get(a.get(1));tell(sender,"Name="+effect.name+", shapes="+effect.shapes.size()+", layers="+effect.layers.size()+", duration="+effect.durationTicks+"t, interval="+effect.intervalTicks+"t, mix="+effect.mix);}
@@ -74,11 +77,19 @@ public final class PcCommand implements BasicCommand {
             case "copy" -> {need(a,3,"/pc copy <source> <new-name>");effects.copy(a.get(1),a.get(2));tell(sender,"Effect copied: "+a.get(2));}
             case "rename" -> {need(a,3,"/pc rename <name> <new-name>");effects.rename(a.get(1),a.get(2));tell(sender,"Effect renamed: "+a.get(2));}
             case "delete" -> {need(a,2,"/pc delete <name>");effects.delete(a.get(1));tell(sender,"Saved effect deleted. Existing runs will continue.");}
-            case "validate" -> {need(a,2,"/pc validate <name>");List<String> problems=effects.validate(a.get(1));tell(sender,problems.isEmpty()?"Validation passed: "+a.get(1):"Validation errors: "+String.join("; ",problems));}
+            case "validate" -> {
+                need(a,2,"/pc validate <name>");
+                List<String> problems=effects.validate(a.get(1));
+                if(problems.isEmpty()) tell(sender,"Validation passed: "+a.get(1));
+                else {
+                    tell(sender,"[VALIDATION] Effect '"+a.get(1)+"' has "+problems.size()+" issue(s):");
+                    for(int problem=0;problem<problems.size();problem++) replyError(sender,"[VALIDATION "+(problem+1)+"/"+problems.size()+"] "+problems.get(problem));
+                }
+            }
             case "types" -> {
                 int page=a.size()>1?positive(a.get(1)):1;
                 List<String> types=Arrays.stream(Particle.values()).map(p -> p.name().toLowerCase(Locale.ROOT)).sorted().toList();
-                int from=(page-1)*20;if(from>=types.size()) throw new IllegalArgumentException("Page out of range.");
+                int from=CommandNumbers.pageOffset(page,types.size());
                 tell(sender,"Particle types: "+types.size()+" (page "+page+"): "+String.join(", ",types.subList(from,Math.min(from+20,types.size()))));
             }
             case "type" -> {need(a,2,"/pc type <particle>");Particle p=ParticleDataCodec.particle(a.get(1));tell(sender,p.name().toLowerCase(Locale.ROOT)+" data fields: "+ParticleDataCodec.keys(p));}
@@ -89,6 +100,7 @@ public final class PcCommand implements BasicCommand {
             case "set" -> setting(a,sender);
             case "motion" -> motion(a,sender);
             case "param" -> parameter(a,sender);
+            case "location" -> location(a,source);
             case "preview","spawn","play" -> invoke(root,a,source);
             case "running" -> {
                 List<PlaybackManager.Handle> runs=playback.running().stream().filter(h -> a.size()<2||h.name().equals(a.get(1))).toList();
@@ -230,37 +242,97 @@ public final class PcCommand implements BasicCommand {
         }
     }
 
-    private void invoke(String kind,List<String> a,CommandSourceStack source) {
-        need(a,2,"/pc "+kind+" <effect> [at <world> <x> <y> <z>] [follow <entity>] [for <player>] [with key=value...]");
+    private void location(List<String> a,CommandSourceStack source) throws SQLException {
+        need(a,2,"/pc location save|list|info|delete ...");
+        CommandSender sender=source.getSender();
+        switch(a.get(1)) {
+            case "save" -> {
+                need(a,4,"/pc location save <name> [world] <x> <y> <z>");
+                Location origin=source.getLocation();
+                boolean console=sender instanceof ConsoleCommandSender||sender instanceof RemoteConsoleCommandSender;
+                LocationArgument.Source position=new LocationArgument.Source(origin==null||origin.getWorld()==null?null:origin.getWorld().getName(),origin==null?Double.NaN:origin.getX(),origin==null?Double.NaN:origin.getY(),origin==null?Double.NaN:origin.getZ(),console);
+                LocationArgument.Parsed parsed=LocationArgument.parse(a,3,position,name -> Bukkit.getWorld(name)!=null);
+                if(parsed.nextIndex()!=a.size()) throw new IllegalArgumentException("Usage: /pc location save <name> [world] <x> <y> <z>");
+                World world=Bukkit.getWorld(parsed.world());
+                if(world==null) throw new IllegalArgumentException("World not found: "+parsed.world());
+                SavedLocation saved=new SavedLocation(a.get(2),world.getUID(),world.getName(),parsed.x(),parsed.y(),parsed.z());
+                effects.saveLocation(saved);
+                tell(sender,"Saved location "+saved.name()+" at "+where(new Location(world,saved.x(),saved.y(),saved.z()))+".");
+            }
+            case "list" -> {
+                if(a.size()>3) throw new IllegalArgumentException("Usage: /pc location list [page]");
+                int page=a.size()>2?positive(a.get(2)):1;
+                int total=effects.locationCount();int from=CommandNumbers.pageOffset(page,total);
+                tell(sender,"Saved locations: "+total+" (page "+page+"): "+String.join(", ",effects.locationPage(from,20)));
+            }
+            case "info" -> {
+                need(a,3,"/pc location info <name>");
+                SavedLocation saved=effects.getLocation(a.get(2));
+                tell(sender,"Saved location "+saved.name()+": "+saved.worldName()+" ("+saved.worldId()+") "+coordinates(saved.x(),saved.y(),saved.z()));
+            }
+            case "delete" -> {
+                need(a,3,"/pc location delete <name>");effects.deleteLocation(a.get(2));
+                tell(sender,"Saved location deleted: "+a.get(2));
+            }
+            default -> throw new IllegalArgumentException("Unknown location command. Use /pc location save|list|info|delete.");
+        }
+    }
+
+    private void invoke(String kind,List<String> a,CommandSourceStack source) throws SQLException {
+        need(a,2,"/pc "+kind+" <effect> [at [world] <x> <y> <z>|saved <name>|player <player>] [follow <entity>] [for <player>] [with key=value...]");
         EffectDefinition effect=effects.get(a.get(1));CommandSender sender=source.getSender();
         Location at=source.getLocation();Entity follow=null;Collection<Player> receivers=null;Map<String,Double> overrides=new HashMap<>();
-        boolean explicitLocation=false;int i=2;
+        boolean console=sender instanceof ConsoleCommandSender||sender instanceof RemoteConsoleCommandSender;
+        LocationArgument.Source position=new LocationArgument.Source(
+            at==null||at.getWorld()==null?null:at.getWorld().getName(),
+            at==null?Double.NaN:at.getX(),at==null?Double.NaN:at.getY(),at==null?Double.NaN:at.getZ(),console);
+        boolean explicitLocation=false,selectedFollow=false,selectedReceivers=false;int i=2;
         while(i<a.size()) {
             String option=a.get(i++);
             switch(option) {
                 case "at" -> {
-                    if(i+3>=a.size()) throw new IllegalArgumentException("at requires a world and x y z coordinates.");
-                    World world=Bukkit.getWorld(a.get(i++));if(world==null)throw new IllegalArgumentException("World not found.");
-                    double x=coordinate(a.get(i++),at.getX()),y=coordinate(a.get(i++),at.getY()),z=coordinate(a.get(i++),at.getZ());
-                    at=new Location(world,x,y,z);explicitLocation=true;
+                    if(explicitLocation) throw new IllegalArgumentException("Specify at only once.");
+                    if(i>=a.size()) throw new IllegalArgumentException("at requires coordinates, saved <name>, or player <player>.");
+                    boolean worldCoordinates=LocationArgument.hasWorldCoordinates(a,i,name -> Bukkit.getWorld(name)!=null);
+                    if(!worldCoordinates&&a.get(i).equals("saved")) {
+                        if(i+1>=a.size()) throw new IllegalArgumentException("at saved requires a location name.");
+                        at=effects.resolveLocation(a.get(i+1));i+=2;
+                    } else if(!worldCoordinates&&a.get(i).equals("player")) {
+                        if(i+1>=a.size()) throw new IllegalArgumentException("at player requires a player name.");
+                        List<Player> players=entities(sender,a.get(i+1)).stream().filter(Player.class::isInstance).map(Player.class::cast).filter(Player::isOnline).toList();
+                        if(players.size()!=1) throw new IllegalArgumentException("at player must select exactly one online player.");
+                        at=players.getFirst().getLocation().clone();i+=2;
+                    } else {
+                        LocationArgument.Parsed target=LocationArgument.parse(a,i,position,name -> Bukkit.getWorld(name)!=null);
+                        World world=Bukkit.getWorld(target.world());
+                        if(world==null) throw new IllegalArgumentException("World not found: "+target.world());
+                        at=new Location(world,target.x(),target.y(),target.z());i=target.nextIndex();
+                    }
+                    explicitLocation=true;
                 }
-                case "follow" -> {if(i>=a.size())throw new IllegalArgumentException("follow requires a target.");List<Entity> matches=entities(sender,a.get(i++));if(matches.size()!=1)throw new IllegalArgumentException("follow must select exactly one entity.");follow=matches.getFirst();}
-                case "for" -> {if(i>=a.size())throw new IllegalArgumentException("for requires a target.");receivers=entities(sender,a.get(i++)).stream().filter(Player.class::isInstance).map(Player.class::cast).toList();if(receivers.isEmpty())throw new IllegalArgumentException("No target players found.");}
-                case "with" -> {while(i<a.size()){String[] pair=a.get(i++).split("=",2);if(pair.length!=2)throw new IllegalArgumentException("Parameters must use name=value format.");overrides.put(pair[0],decimal(pair[1]));}}
+                case "follow" -> {if(selectedFollow)throw new IllegalArgumentException("Specify follow only once.");selectedFollow=true;if(i>=a.size())throw new IllegalArgumentException("follow requires a target.");List<Entity> matches=entities(sender,a.get(i++));if(matches.size()!=1)throw new IllegalArgumentException("follow must select exactly one entity.");follow=matches.getFirst();}
+                case "for" -> {if(selectedReceivers)throw new IllegalArgumentException("Specify for only once.");selectedReceivers=true;if(i>=a.size())throw new IllegalArgumentException("for requires a target.");receivers=entities(sender,a.get(i++)).stream().filter(Player.class::isInstance).map(Player.class::cast).toList();if(receivers.isEmpty())throw new IllegalArgumentException("No target players found.");}
+                case "with" -> {if(i>=a.size())throw new IllegalArgumentException("with requires at least one name=value parameter.");while(i<a.size()){String[] pair=a.get(i++).split("=",2);if(pair.length!=2||pair[0].isBlank())throw new IllegalArgumentException("Parameters must use name=value format.");if(overrides.putIfAbsent(pair[0],decimal(pair[1]))!=null)throw new IllegalArgumentException("Duplicate variable override: "+pair[0]);}}
                 default -> throw new IllegalArgumentException("Unknown playback option: "+option);
             }
         }
-        if((sender instanceof ConsoleCommandSender||sender instanceof RemoteConsoleCommandSender)&&!explicitLocation) throw new IllegalArgumentException("Console commands require at <world> <x> <y> <z>.");
+        if(console&&!explicitLocation) throw new IllegalArgumentException("Console commands require at <world> <x> <y> <z>, at saved <name>, or at player <player>.");
+        if(explicitLocation&&!effect.anchor.equals("fixed")) throw new IllegalArgumentException("Explicit locations require a fixed anchor. Use /pc set "+effect.name+" anchor fixed.");
         if(at==null||at.getWorld()==null) throw new IllegalArgumentException("Unable to determine a playback location.");
+        Location shown=switch(effect.anchor) {case "caller" -> source.getExecutor()==null?at:source.getExecutor().getLocation();case "target" -> follow==null?at:follow.getLocation();default -> at;};
+        String placement=where(shown)+(effect.anchor.equals("fixed")?"":" (follows "+effect.anchor+")");
         PlaybackManager.Context context=new PlaybackManager.Context(at,source.getExecutor(),follow,receivers,overrides);
-        if(kind.equals("spawn")) {effects.spawn(effect.name,context);tell(sender,"Effect spawned once: "+effect.name);}
+        if(kind.equals("spawn")) {effects.spawn(effect.name,context);tell(sender,"Effect spawned once: "+effect.name+" at "+placement);}
         else if(kind.equals("preview")) {
             if(!(sender instanceof Player player)) throw new IllegalArgumentException("Only players can preview effects.");
             effect.durationTicks=40;
             context=new PlaybackManager.Context(at,source.getExecutor(),follow,List.of(player),overrides);
-            PlaybackManager.Handle handle=playback.play(effect,context);tell(sender,"Preview run ID: "+handle.id());
-        } else {PlaybackManager.Handle handle=effects.play(effect.name,context);tell(sender,"Playback run ID: "+handle.id());}
+            PlaybackManager.Handle handle=playback.play(effect,context);tell(sender,"Preview run ID: "+handle.id()+" at "+placement);
+        } else {PlaybackManager.Handle handle=effects.play(effect.name,context);tell(sender,"Playback run ID: "+handle.id()+" at "+placement);}
     }
+
+    private static String where(Location location) {return location.getWorld().getName()+" "+coordinates(location.getX(),location.getY(),location.getZ());}
+    private static String coordinates(double x,double y,double z) {return String.format(Locale.ROOT,"(%.2f, %.2f, %.2f)",x,y,z);}
 
     private static List<Entity> entities(CommandSender sender,String selector) {
         if(selector.startsWith("@")) return Bukkit.selectEntities(sender,selector);
@@ -272,13 +344,17 @@ public final class PcCommand implements BasicCommand {
     private static Layer layer(EffectDefinition e,String name) {return e.layers.stream().filter(l -> l.id.equals(name)).findFirst().orElseThrow(() -> new IllegalArgumentException("Layer not found: "+name));}
     private static void numberOption(Shape s,String pair) {String[] p=pair.split("=",2);if(p.length!=2)throw new IllegalArgumentException("Shape options must use key=value format: "+pair);s.numbers.put(p[0],decimal(p[1]));}
     private static double[] triple(List<String> a,int start) {need(a,start+3,"Three numbers (x y z) are required.");return new double[]{decimal(a.get(start)),decimal(a.get(start+1)),decimal(a.get(start+2))};}
-    private static double coordinate(String value,double base) {double n=value.startsWith("~")?base+(value.length()==1?0:decimal(value.substring(1))):decimal(value);if(!Double.isFinite(n))throw new IllegalArgumentException("Invalid coordinate.");return n;}
     private static int integer(String value) {try{return Integer.parseInt(value);}catch(NumberFormatException e){throw new IllegalArgumentException("Expected an integer: "+value);}}
     private static int positive(String value) {int n=integer(value);if(n<1)throw new IllegalArgumentException("Expected a positive integer.");return n;}
     private static double decimal(String value) {try{double n=Double.parseDouble(value);if(!Double.isFinite(n))throw new NumberFormatException();return n;}catch(NumberFormatException e){throw new IllegalArgumentException("Expected a finite number: "+value);}}
-    private static int ticks(String value) {if(value.equalsIgnoreCase("infinite"))return -1;if(value.endsWith("s")){double seconds=decimal(value.substring(0,value.length()-1));return Math.toIntExact(Math.round(seconds*20));}return integer(value.endsWith("t")?value.substring(0,value.length()-1):value);}
+    private static int ticks(String value) {return CommandNumbers.ticks(value);}
     private static void need(List<String> args,int count,String usage) {if(args.size()<count)throw new IllegalArgumentException("Usage: "+usage);}
     private void tell(CommandSender sender,String text) {sender.sendMessage(prefix+text);}
+    private void replyError(CommandSender sender,String message) {
+        String safe=message.replaceAll("[\\p{Cntrl}§]","?");
+        for(int start=0;start<safe.length();start+=600)
+            sender.sendMessage(prefix+"§c"+(start==0?"":"[continued] ")+safe.substring(start,Math.min(start+600,safe.length())));
+    }
     private void help(CommandSender sender,String topic) {
         if(topic!=null) {
             switch(topic.toLowerCase(Locale.ROOT)) {
@@ -291,14 +367,16 @@ public final class PcCommand implements BasicCommand {
                     return;
                 }
                 case "layer" -> {tell(sender,"/pc layer add <effect> <layer> <particle> <shape>");tell(sender,"/pc layer set <effect> <layer> particle|shape|count|offset|extra|interval|start|duration|weight <value>");tell(sender,"/pc layer data <effect> <layer> <field> <value> / data <effect> <layer> remove <field>");return;}
-                case "formula" -> {tell(sender,"Formula variables: x y z w u v t and variables set with /pc param set. t is measured in seconds.");tell(sender,"Operators: + - * / % ^, comparisons, && ||, if(condition,true,false). Functions: "+String.join(", ",Expression.functionNames().stream().sorted().toList()));return;}
-                case "play" -> {tell(sender,"/pc play <effect> [at <world> x y z] [follow <entity>] [for <player>] [with variable=value ...]");tell(sender,"Players and command blocks default to their location; console commands require at.");return;}
+                case "formula" -> {tell(sender,"Parametric coordinates: u v t and parameters. Equations also use x y z w. Slices use x y z t and parameters; parametric slices also use u v. A slice cannot use w. t is seconds.");tell(sender,"Operators: + - * / % ^, comparisons, && ||, if(condition,true,false). Functions: "+String.join(", ",Expression.functionNames().stream().sorted().toList()));return;}
+                case "play" -> {tell(sender,"/pc play <effect> [at [world] x y z|saved <name>|player <player>] [follow <entity>] [for <player>] [with variable=value ...]");tell(sender,"at player uses the player's position when the command runs. Use anchor target and follow <entity> for movement.");tell(sender,"Players and command blocks may use ~ coordinates; console coordinates require a world and absolute values. Use world:<name> for ambiguous world names.");return;}
+                case "location" -> {tell(sender,"/pc location save <name> [world] <x> <y> <z>");tell(sender,"/pc location list [page] / info <name> / delete <name>");return;}
                 default -> {tell(sender,"Unknown help topic: "+topic);return;}
             }
         }
         tell(sender,"/pc create|copy|rename|delete|list|info|validate <effect>");
         tell(sender,"/pc shape, /pc layer, /pc mix, /pc set, /pc motion, /pc param");
-        tell(sender,"/pc preview|spawn|play <effect> [at <world> x y z] [follow <entity>] [for <player>] [with key=value...]");
+        tell(sender,"/pc location save|list|info|delete ...; /pc help location");
+        tell(sender,"/pc preview|spawn|play <effect> [at [world] x y z|saved <name>|player <player>] [follow <entity>] [for <player>] [with key=value...]");
         tell(sender,"/pc running, /pc pause|resume|stop <run-id>, /pc stopall <effect>, /pc import|export");
         tell(sender,"/pc types, /pc type <particle>, /pc shapes. Details: /pc help shape|layer|formula|play");
     }
@@ -327,7 +405,12 @@ public final class PcCommand implements BasicCommand {
             List<String> options=new ArrayList<>();
             if(List.of("info","copy","rename","delete","validate","preview","spawn","play","stopall","export").contains(root)&&index==1) options.addAll(effects.suggestNames(current,40));
             if(root.equals("type")&&index==1||root.equals("layer")&&index==4&&a.size()>2&&a.get(1).equals("add")) options.addAll(Arrays.stream(Particle.values()).map(p -> p.name().toLowerCase(Locale.ROOT)).toList());
-            if(root.equals("help")&&index==1)options.addAll(List.of("shape","layer","formula","play"));
+            if(root.equals("help")&&index==1)options.addAll(List.of("shape","layer","formula","play","location"));
+            if(root.equals("location")) {
+                if(index==1) options.addAll(List.of("save","list","info","delete"));
+                if(index==2&&List.of("info","delete").contains(a.get(1))) options.addAll(effects.suggestLocationNames(current,40));
+                if(a.size()>2&&a.get(1).equals("save")&&index>=3) coordinateSuggestions(source,a,index,3,options);
+            }
             if(root.equals("shape")) shapeSuggestions(a,index,options);
             if(root.equals("layer")) layerSuggestions(a,index,options);
             if(root.equals("set")) {if(index==1)options.addAll(effects.names());if(index==2)options.addAll(List.of("duration","interval","anchor"));if(index==3&&a.size()>2&&a.get(2).equals("anchor"))options.addAll(List.of("fixed","caller","target"));if(index==3&&a.size()>2&&a.get(2).equals("duration"))options.addAll(List.of("100t","5s","infinite"));}
@@ -338,13 +421,47 @@ public final class PcCommand implements BasicCommand {
             if(List.of("pause","resume","stop").contains(root)&&index==1)options.addAll(playback.running().stream().map(PlaybackManager.Handle::id).toList());
             if(root.equals("running")&&index==1)options.addAll(effects.names());
             if(List.of("play","spawn","preview").contains(root)&&index>1) {
-                options.addAll(List.of("at","follow","for","with"));
-                if(a.get(index-1).equals("at")) options.addAll(Bukkit.getWorlds().stream().map(World::getName).toList());
-                if(a.get(index-1).equals("follow")||a.get(index-1).equals("for"))options.addAll(List.of("@p","@a","@e"));
+                if(!locationSuggestions(source,a,index,options)) options.addAll(List.of("at","follow","for","with"));
+                if(a.get(index-1).equals("follow")||a.get(index-1).equals("for")) {options.addAll(List.of("@p","@a","@e"));options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());}
             }
             if(root.equals("import")&&index==1)options.add("<name>.json");
             return matches(options,current);
-        } catch(Exception ignored) {return List.of();}
+        } catch(Exception e) {logger.log(Level.FINE,"Tab completion for "+CommandDiagnostics.path(Arrays.asList(args))+" failed",e);return List.of();}
+    }
+
+    private boolean locationSuggestions(CommandSourceStack source,List<String> args,int index,List<String> options) throws SQLException {
+        int at=args.lastIndexOf("at");
+        if(at<2||at>=index) return false;
+        int offset=index-at-1;
+        if(offset==0) {options.addAll(List.of("saved","player"));coordinateSuggestions(source,args,index,at+1,options);return true;}
+        if(args.get(at+1).equals("saved")) {if(offset==1)options.addAll(effects.suggestLocationNames(args.get(index).toLowerCase(Locale.ROOT),40));return offset==1;}
+        if(args.get(at+1).equals("player")) {
+            if(offset==1) {options.add("@p");options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());}
+            return offset==1;
+        }
+        return coordinateSuggestions(source,args,index,at+1,options);
+    }
+
+    private static boolean coordinateSuggestions(CommandSourceStack source,List<String> args,int index,int start,List<String> options) {
+        int offset=index-start;
+        boolean console=source.getSender() instanceof ConsoleCommandSender||source.getSender() instanceof RemoteConsoleCommandSender;
+        Location location=source.getLocation();
+        if(offset==0) {
+            options.addAll(Bukkit.getWorlds().stream().map(World::getName).toList());
+            options.addAll(Bukkit.getWorlds().stream().map(world -> "world:"+world.getName()).toList());
+            if(!console) {
+                options.add("~");
+                if(location!=null) options.add(Integer.toString(location.getBlockX()));
+            }
+            return true;
+        }
+        String first=args.get(start);
+        boolean namedWorld=first.startsWith("world:")||Bukkit.getWorld(first)!=null||!LocationArgument.looksLikeCoordinate(first);
+        int axis=namedWorld?offset-1:offset;
+        if(axis<0||axis>2) return false;
+        if(!console) options.add("~");
+        options.add(location==null?"0":Integer.toString(switch(axis){case 0 -> location.getBlockX();case 1 -> location.getBlockY();default -> location.getBlockZ();}));
+        return true;
     }
 
     private void shapeSuggestions(List<String> a,int index,List<String> options) {
