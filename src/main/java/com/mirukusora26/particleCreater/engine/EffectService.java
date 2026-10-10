@@ -226,6 +226,8 @@ public final class EffectService {
         playback.spawn(get(name),context);
     }
     public boolean stop(String runId) {primaryThread();return playback!=null&&playback.stop(runId);}
+    public boolean pause(String runId) {primaryThread();return playback!=null&&playback.pause(runId);}
+    public boolean resume(String runId) {primaryThread();return playback!=null&&playback.resume(runId);}
     public int stopAll(String name) {primaryThread();return playback==null?0:playback.stopAll(name);}
     public List<PlaybackManager.Handle> running() {primaryThread();return playback==null?List.of():playback.running();}
     private static void primaryThread() {if(!Bukkit.isPrimaryThread()) throw new IllegalStateException("EffectService must be called on the server thread");}

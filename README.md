@@ -4,12 +4,12 @@ Create, save, and play animated particle effects on a Paper server. Define effec
 
 **Compatibility:** Paper 26.2, Java 25. This is a server-side plugin; players do not need a client mod. Other server versions have not been verified.
 
-**Release status:** 0.0.2 is a preview build. The build and automated tests pass, but in-game command and visual behavior still need server testing.
+**Release status:** 0.0.3 is a preview build. Core automated tests pass. Headless Paper 26.2 build 133 checks passed with and without Skript 2.16.2, including 41 Skript assertions before and after a server restart. Player interaction and client rendering still need in-game testing. See the [runtime test report](docs/runtime-tests-0.0.3.md).
 
 ## Install
 
 1. Run [Paper 26.2](https://papermc.io/downloads/paper) with [Java 25](https://docs.papermc.io/paper/getting-started/).
-2. Copy `build/libs/particleCreater-0.0.2.jar` into the server's `plugins/` directory. If downloading a release, use the main JAR, not the `-plain.jar` file.
+2. Copy `build/libs/particleCreater-0.0.3.jar` into the server's `plugins/` directory. If downloading a release, use the main JAR, not the `-plain.jar` file.
 3. Start the server and run `/pc help` as an operator.
 
 The distributable JAR includes SQLite JDBC. No separate database server or client-side installation is required. Only OP players, the console, and command blocks can use `/pc`. Console playback commands need `at <world> <x> <y> <z>`, `at saved <name>`, or `at player <player>`.
@@ -147,7 +147,35 @@ service.stop(run.id());
 
 To play from another plugin at a fixed position, pass `PlaybackManager.Context.at(new Location(world, 100, 70, -30))`.
 
-`EffectService#get`, `save`, `update`, `validate`, `spawn`, and `play` expose the same definitions and engine used by `/pc`. `saveLocation`, `getLocation`, `locationNames`, and `deleteLocation` manage shared positions; `resolveLocation` returns a Bukkit `Location` after confirming its world is loaded. All `EffectService` calls must run on the server thread. `ShapeUtils`, `ShapeEngine`, and `Expression` are also public utility entry points. A definition is validated before playback. Expected input errors explain the field or formula position; unexpected run errors stop only that run and are logged.
+`EffectService#get`, `save`, `update`, `validate`, `spawn`, `play`, `stop`, `pause`, and `resume` expose the same definitions and engine used by `/pc`. `saveLocation`, `getLocation`, `locationNames`, and `deleteLocation` manage shared positions; `resolveLocation` returns a Bukkit `Location` after confirming its world is loaded. All `EffectService` calls must run on the server thread. `ShapeUtils`, `ShapeEngine`, and `Expression` are also public utility entry points. A definition is validated before playback. Expected input errors explain the field or formula position; unexpected run errors stop only that run and are logged.
+
+## Optional Skript functions
+
+Install Skript 2.16.2 alongside particleCreater to use six functions in server scripts. Skript is optional; `/pc` and the Java API remain available without it. Script authors can call these functions from player events, so only trusted administrators should edit server scripts. Functions use a location snapshot and run on the server thread. Effects with `caller` or `target` anchors still require an entity context through `/pc` or the Java API.
+
+| Function | Result |
+| --- | --- |
+| `pcPlay(name, location)` | Starts a run and returns its run ID, or an unset value on failure |
+| `pcSpawn(name, location)` | Emits one frame and returns true on success |
+| `pcStop(runId)` | Stops a run and returns whether it existed |
+| `pcPause(runId)` | Pauses a run and returns whether it existed |
+| `pcResume(runId)` | Resumes a run and returns whether it existed |
+| `pcLocation(name)` | Returns a saved location, or an unset value if missing or its world is unloaded |
+
+```skript
+on join:
+    set {_run} to pcPlay("ring", location of player)
+    wait 5 seconds
+    set {_stopped} to pcStop({_run})
+
+command /showgate:
+    trigger:
+        set {_gate} to pcLocation("spawn_gate")
+        if {_gate} is set:
+            set {_spawned} to pcSpawn("ring", {_gate})
+```
+
+`pcPause({_run})` and `pcResume({_run})` control the same run ID. A failed function logs an English `[SKRIPT]` message with the function name and cause. `pcPlay` and `pcLocation` return unset on failure; the other functions return false. A true result from `pcSpawn` means the server completed the emission call; clients may still hide particles because of their settings or distance. A run ID from `pcPlay` identifies a started run, which can stop later if playback encounters an error.
 
 ## Error diagnostics
 
@@ -157,8 +185,10 @@ All plugin command feedback and server log messages are in English. Command fail
 
 ## Build and current limits
 
-Build the distributable JAR with `./gradlew clean test build`. The resulting `build/libs/particleCreater-0.0.2.jar` is the shaded plugin JAR. Automated tests cover expressions, command coordinates, shape sampling and point limits, particle data types, and SQLite persistence for effects and positions.
+Build the distributable JAR with `./gradlew clean test build`. The resulting `build/libs/particleCreater-0.0.3.jar` is the shaded plugin JAR. Automated tests cover expressions, command coordinates, shape sampling and point limits, particle data types, and SQLite persistence for effects and positions. Skript is a compile-only dependency and is not included in the JAR.
 
-Definitions are limited to 32 parameters, 64 shapes, and 32 layers. Playback is limited to 64 active runs, 2,048 sampled points per run per frame, and a shared budget of 10,000 particles per tick. Area and formula sampling grids are capped at 100,000 candidate cells or points. Layer offsets and `extra` are limited to ±100. Dense shapes or excessive particle counts can be rejected. A formula must produce finite values. Particle `count=0` retains Paper's directional single-particle behavior. Visual output also depends on client particle settings and distance from the effect. An in-game Paper server smoke test is still required before treating the JAR as production-ready.
+Run a development server with `./gradlew runServer --no-configuration-cache`. Add `-PwithSkript=true` to download the official Skript 2.16.2 release and test the optional functions. The task uses Java 25 and Paper 26.2; server data goes to `run/base/` or `run/skript/` respectively. These directories are ignored by Git. On first use, review the [Minecraft EULA](https://aka.ms/MinecraftEULA) and set `eula=true` in that server's `eula.txt` before restarting. The console-only smoke script is in `src/test/skript/pc-smoke.sk`; its fixture setup is described in the runtime test report.
 
-For a server smoke test, run `play`, `spawn`, and `preview` with absolute, relative, saved, and player positions from an OP account; run the supported forms from the console and a command block; restart the server to check that effects and positions persist; then try an unloaded saved world, an offline player, a mixed effect, and a dense 4D shape to check errors and budgets. Review the returned run ID and position against the observed effect.
+Definitions are limited to 32 parameters, 64 shapes, and 32 layers. Playback is limited to 64 active runs, 2,048 sampled points per run per frame, and a shared budget of 10,000 particles per tick. Area and formula sampling grids are capped at 100,000 candidate cells or points. Layer offsets and `extra` are limited to ±100. Dense shapes or excessive particle counts can be rejected. A formula must produce finite values. Particle `count=0` retains Paper's directional single-particle behavior. Visual output also depends on client particle settings and distance from the effect. An in-game client check is still required before treating the JAR as production-ready.
+
+For a server smoke test, run `play`, `spawn`, and `preview` with absolute, relative, saved, and player positions from an OP account; run the supported forms from the console and a command block; restart the server to check that effects and positions persist; then try an unloaded saved world, an offline player, a mixed effect, and a dense 4D shape to check errors and budgets. Run the plugin once without Skript, then with Skript 2.16.2 and a test script that calls all six functions, including unknown names and unloaded saved worlds. Review the returned run ID and position against the observed effect.

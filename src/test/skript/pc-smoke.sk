@@ -1,0 +1,322 @@
+# particleCreater 0.0.3 / Skript 2.16.2 console smoke test.
+# Preparation on a disposable server (replace "world" with the loaded world name):
+#   pc create pc_skript_smoke
+#   pc layer add pc_skript_smoke spark flame origin
+#   pc set pc_skript_smoke duration 40t
+#   pc validate pc_skript_smoke
+#   pc location save pc_skript_loc world 0 70 0
+# Also prepare pc_unloaded_loc as a saved location whose world UUID is not loaded.
+# Verify its server log says "world is not loaded"; an absent fixture also returns unset.
+# Copy this file to plugins/Skript/scripts/pc-smoke.sk, run `sk reload pc-smoke`,
+# then run `pcskriptcheck` from the server console.
+
+command /pcskriptcheck:
+    executable by: console
+    trigger:
+        set {_passed} to 0
+        set {_failed} to 0
+
+        set {_saved} to pcLocation("pc_skript_loc")
+        if {_saved} is set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS saved location resolved" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL saved location resolved" to the console
+            send "[PC_TEST] COMPLETE passed=%{_passed}% failed=%{_failed}%" to the console
+            stop
+
+        if x-coordinate of {_saved} is 0:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS saved location x=0" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL saved location x=0" to the console
+        if y-coordinate of {_saved} is 70:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS saved location y=70" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL saved location y=70" to the console
+        if z-coordinate of {_saved} is 0:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS saved location z=0" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL saved location z=0" to the console
+
+        set {_spawned} to pcSpawn("pc_skript_smoke", {_saved})
+        if {_spawned} is true:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS pcSpawn" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL pcSpawn" to the console
+
+        set {_run} to pcPlay("pc_skript_smoke", {_saved})
+        if {_run} is set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS pcPlay run=%{_run}%" to the console
+            wait 5 ticks
+            set {_paused} to pcPause({_run})
+            if {_paused} is true:
+                add 1 to {_passed}
+                send "[PC_TEST] PASS pcPause" to the console
+            else:
+                add 1 to {_failed}
+                send "[PC_TEST] FAIL pcPause" to the console
+            wait 80 ticks
+            set {_resumed} to pcResume({_run})
+            if {_resumed} is true:
+                add 1 to {_passed}
+                send "[PC_TEST] PASS pcResume after 80 paused ticks" to the console
+            else:
+                add 1 to {_failed}
+                send "[PC_TEST] FAIL pcResume after 80 paused ticks" to the console
+            wait 5 ticks
+            set {_stopped} to pcStop({_run})
+            if {_stopped} is true:
+                add 1 to {_passed}
+                send "[PC_TEST] PASS paused time did not expire the 40-tick run" to the console
+            else:
+                add 1 to {_failed}
+                send "[PC_TEST] FAIL paused time expired the 40-tick run" to the console
+            set {_stoppedAgain} to pcStop({_run})
+            if {_stoppedAgain} is false:
+                add 1 to {_passed}
+                send "[PC_TEST] PASS repeated pcStop returned false" to the console
+            else:
+                add 1 to {_failed}
+                send "[PC_TEST] FAIL repeated pcStop returned false" to the console
+        else:
+            add 5 to {_failed}
+            send "[PC_TEST] FAIL pcPlay; pause, resume, and stop checks skipped" to the console
+
+        set {_expiryRun} to pcPlay("pc_skript_smoke", {_saved})
+        if {_expiryRun} is set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS separate expiry run started" to the console
+            wait 50 ticks
+            set {_expiredStop} to pcStop({_expiryRun})
+            if {_expiredStop} is false:
+                add 1 to {_passed}
+                send "[PC_TEST] PASS 40-tick run expired after 50 active ticks" to the console
+            else:
+                add 1 to {_failed}
+                send "[PC_TEST] FAIL 40-tick run remained after 50 active ticks" to the console
+        else:
+            add 2 to {_failed}
+            send "[PC_TEST] FAIL separate expiry run could not start" to the console
+
+        set {_unknownPlay} to pcPlay("pc_missing", {_saved})
+        if {_unknownPlay} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unknown effect pcPlay unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unknown effect pcPlay unset" to the console
+        set {_unknownSpawn} to pcSpawn("pc_missing", {_saved})
+        if {_unknownSpawn} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unknown effect pcSpawn false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unknown effect pcSpawn false" to the console
+        set {_unknownLocation} to pcLocation("pc_missing")
+        if {_unknownLocation} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unknown saved location unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unknown saved location unset" to the console
+        set {_unloadedLocation} to pcLocation("pc_unloaded_loc")
+        if {_unloadedLocation} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unloaded saved location unset; verify world-not-loaded log" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unloaded saved location unset" to the console
+
+        set {_unknownStop} to pcStop("pc_missing_run")
+        if {_unknownStop} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unknown run pcStop false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unknown run pcStop false" to the console
+        set {_unknownPause} to pcPause("pc_missing_run")
+        if {_unknownPause} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unknown run pcPause false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unknown run pcPause false" to the console
+        set {_unknownResume} to pcResume("pc_missing_run")
+        if {_unknownResume} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unknown run pcResume false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unknown run pcResume false" to the console
+
+        set {_missingPlay} to pcPlay()
+        if {_missingPlay} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS missing pcPlay arguments unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL missing pcPlay arguments unset" to the console
+        set {_missingSpawn} to pcSpawn()
+        if {_missingSpawn} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS missing pcSpawn arguments false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL missing pcSpawn arguments false" to the console
+        set {_missingStop} to pcStop()
+        if {_missingStop} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS missing pcStop argument false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL missing pcStop argument false" to the console
+        set {_missingPause} to pcPause()
+        if {_missingPause} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS missing pcPause argument false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL missing pcPause argument false" to the console
+        set {_missingResume} to pcResume()
+        if {_missingResume} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS missing pcResume argument false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL missing pcResume argument false" to the console
+        set {_missingSaved} to pcLocation()
+        if {_missingSaved} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS missing pcLocation argument unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL missing pcLocation argument unset" to the console
+
+        set {_blankPlay} to pcPlay("", {_saved})
+        if {_blankPlay} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS blank pcPlay name unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL blank pcPlay name unset" to the console
+        set {_blankSpawn} to pcSpawn("", {_saved})
+        if {_blankSpawn} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS blank pcSpawn name false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL blank pcSpawn name false" to the console
+        set {_blankStop} to pcStop("")
+        if {_blankStop} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS blank pcStop ID false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL blank pcStop ID false" to the console
+        set {_blankPause} to pcPause("")
+        if {_blankPause} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS blank pcPause ID false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL blank pcPause ID false" to the console
+        set {_blankResume} to pcResume("")
+        if {_blankResume} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS blank pcResume ID false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL blank pcResume ID false" to the console
+        set {_blankSaved} to pcLocation("")
+        if {_blankSaved} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS blank pcLocation name unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL blank pcLocation name unset" to the console
+
+        delete {_unsetText}
+        delete {_unsetPlace}
+        set {_unsetPlay} to pcPlay({_unsetText}, {_saved})
+        if {_unsetPlay} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcPlay name unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcPlay name unset" to the console
+        set {_unsetSpawn} to pcSpawn({_unsetText}, {_saved})
+        if {_unsetSpawn} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcSpawn name false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcSpawn name false" to the console
+        set {_unsetStop} to pcStop({_unsetText})
+        if {_unsetStop} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcStop ID false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcStop ID false" to the console
+        set {_unsetPause} to pcPause({_unsetText})
+        if {_unsetPause} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcPause ID false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcPause ID false" to the console
+        set {_unsetResume} to pcResume({_unsetText})
+        if {_unsetResume} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcResume ID false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcResume ID false" to the console
+        set {_unsetSaved} to pcLocation({_unsetText})
+        if {_unsetSaved} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcLocation name unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcLocation name unset" to the console
+
+        set {_missingPlayPlace} to pcPlay("pc_skript_smoke")
+        if {_missingPlayPlace} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS omitted pcPlay location unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL omitted pcPlay location unset" to the console
+        set {_missingSpawnPlace} to pcSpawn("pc_skript_smoke")
+        if {_missingSpawnPlace} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS omitted pcSpawn location false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL omitted pcSpawn location false" to the console
+        set {_unsetPlayPlace} to pcPlay("pc_skript_smoke", {_unsetPlace})
+        if {_unsetPlayPlace} is not set:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcPlay location unset" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcPlay location unset" to the console
+        set {_unsetSpawnPlace} to pcSpawn("pc_skript_smoke", {_unsetPlace})
+        if {_unsetSpawnPlace} is false:
+            add 1 to {_passed}
+            send "[PC_TEST] PASS unset pcSpawn location false" to the console
+        else:
+            add 1 to {_failed}
+            send "[PC_TEST] FAIL unset pcSpawn location false" to the console
+
+        send "[PC_TEST] COMPLETE passed=%{_passed}% failed=%{_failed}%" to the console
